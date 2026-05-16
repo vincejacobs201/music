@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Lokale Muziek Cloud</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { background-color: #0f172a; color: white; }
+        .hidden { display: none; }
+    </style>
+</head>
+<body class="p-4 md:p-10">
+
+    <div class="max-w-xl mx-auto">
+        <h1 class="text-3xl font-bold text-center text-indigo-400 mb-8">🎵 AudioStorage (Local)</h1>
+
+        <!-- AUTH SECTIE -->
+        <div id="auth-ui" class="bg-slate-800 p-8 rounded-xl shadow-xl border border-slate-700">
+            <h2 id="auth-title" class="text-xl font-bold mb-6 text-center">Inloggen</h2>
+            
+            <input id="email" type="email" placeholder="E-mailadres" class="w-full p-3 mb-4 rounded bg-slate-700 border border-slate-600 outline-none focus:ring-2 focus:ring-indigo-500">
+            <input id="password" type="password" placeholder="Wachtwoord" class="w-full p-3 mb-6 rounded bg-slate-700 border border-slate-600 outline-none focus:ring-2 focus:ring-indigo-500">
+            
+            <button onclick="handleAuth()" id="auth-btn" class="w-full bg-indigo-600 hover:bg-indigo-500 p-3 rounded font-bold transition mb-4">Inloggen</button>
+            
+            <p id="auth-toggle" onclick="toggleMode()" class="text-center text-sm text-slate-400 cursor-pointer underline">Nog geen account? Registreer hier</p>
+        </div>
+
+        <!-- APP SECTIE (DASHBOARD) -->
+        <div id="app-ui" class="hidden">
+            <div class="flex justify-between items-center mb-8 bg-slate-800 p-4 rounded-lg">
+                <div>
+                    <p class="text-xs text-slate-400">Welkom,</p>
+                    <p id="user-display" class="font-bold text-indigo-300"></p>
+                </div>
+                <button onclick="logout()" class="bg-slate-700 px-3 py-1 rounded text-xs hover:bg-red-900 transition">Uitloggen</button>
+            </div>
+
+            <!-- UPLOAD -->
+            <div class="bg-slate-800 p-6 rounded-xl border border-slate-700 mb-8">
+                <h3 class="font-bold mb-4">Muziek toevoegen</h3>
+                <input type="file" id="music-file" accept="audio/*" class="text-sm block w-full mb-4 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:bg-indigo-600 file:text-white hover:file:bg-indigo-500">
+                <button onclick="uploadMusic()" class="bg-green-600 hover:bg-green-500 px-6 py-2 rounded-lg font-bold transition w-full">Upload naar mijn bibliotheek</button>
+            </div>
+
+            <!-- LIJST -->
+            <h3 class="text-xl font-bold mb-4">Mijn Muziek</h3>
+            <div id="song-list" class="space-y-4">
+                <!-- Nummers verschijnen hier -->
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let db;
+        let currentUser = null;
+        let isRegister = false;
+
+        // 1. DATABASE SETUP (IndexedDB)
+        const request = indexedDB.open("MusicAppDB", 1);
+        request.onupgradeneeded = (e) => {
+            db = e.target.result;
+            db.createObjectStore("users", { keyPath: "email" });
+            db.createObjectStore("songs", { keyPath: "id", autoIncrement: true });
+        };
+        request.onsuccess = (e) => { db = e.target.result; };
+
+        // 2. WACHTWOORD HASHING (Web Crypto API)
+        async function hashPassword(password) {
+            const msgBuffer = new TextEncoder().encode(password);
+            const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
+            return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
+        }
+
+        // 3. AUTHENTICATIE LOGICA
+        function toggleMode() {
+            isRegister = !isRegister;
+            document.getElementById('auth-title').innerText = isRegister ? "Account aanmaken" : "Inloggen";
+            document.getElementById('auth-btn').innerText = isRegister ? "Registreren" : "Inloggen";
+            document.getElementById('auth-toggle').innerText = isRegister ? "Al een account? Log in" : "Nog geen account? Registreer hier";
+        }
+
+        async function handleAuth() {
+            const email = document.getElementById('email').value;
+            const password = document.getElementById('password').value;
+            if (!email || !password) return alert("Vul alles in");
+
+            const hashedPassword = await hashPassword(password);
+            const transaction = db.transaction(["users"], "readwrite");
+            const store = transaction.objectStore("users");
+
+            if (isRegister) {
+                // Registreren
+                const addReq = store.add({ email, password: hashedPassword });
+                addReq.onsuccess = () => { alert("Geregistreerd! Log nu in."); toggleMode(); };
+                addReq.onerror = () => { alert("E-mail bestaat al."); };
+            } else {
+                // Inloggen
+                const getReq = store.get(email);
+                getReq.onsuccess = () => {
+                    const user = getReq.result;
+                    if (user && user.password === hashedPassword) {
+                        currentUser = email;
+                        showApp();
+                    } else {
+                        alert("Onjuiste gegevens.");
+                    }
+                };
+            }
+        }
+
+        // 4. MUZIEK LOGICA
+        function uploadMusic() {
+            const fileInput = document.getElementById('music-file');
+            const file = fileInput.files[0];
+            if (!file) return alert("Kies een bestand");
+
+            const reader = new FileReader();
+            reader.readAsArrayBuffer(file);
+            reader.onload = () => {
+                const transaction = db.transaction(["songs"], "readwrite");
+                const store = transaction.objectStore("songs");
+                store.add({
+                    userEmail: currentUser,
+                    title: file.name,
+                    data: reader.result, // Het bestand zelf als buffer
+                    type: file.type
+                });
+                transaction.oncomplete = () => {
+                    fileInput.value = "";
+                    loadSongs();
+                };
+            };
+        }
+
+        function loadSongs() {
+            const list = document.getElementById('song-list');
+            list.innerHTML = "";
+            const transaction = db.transaction(["songs"], "readonly");
+            const store = transaction.objectStore("songs");
+            const cursorRequest = store.openCursor();
+
+            cursorRequest.onsuccess = (e) => {
+                const cursor = e.target.result;
+                if (cursor) {
+                    const song = cursor.value;
+                    // Alleen muziek van de huidige gebruiker tonen!
+                    if (song.userEmail === currentUser) {
+                        const blob = new Blob([song.data], { type: song.type });
+                        const url = URL.createObjectURL(blob);
+
+                        const div = document.createElement('div');
+                        div.className = "bg-slate-700 p-4 rounded-lg shadow border border-slate-600";
+                        div.innerHTML = `
+                            <p class="font-bold mb-2 text-indigo-200">${song.title}</p>
+                            <audio controls src="${url}" class="w-full"></audio>
+                        `;
+                        list.appendChild(div);
+                    }
+                    cursor.continue();
+                }
+            };
+        }
+
+        // 5. UI SCHAKELEN
+        function showApp() {
+            document.getElementById('auth-ui').classList.add('hidden');
+            document.getElementById('app-ui').classList.remove('hidden');
+            document.getElementById('user-display').innerText = currentUser;
+            loadSongs();
+        }
+
+        function logout() {
+            currentUser = null;
+            document.getElementById('auth-ui').classList.remove('hidden');
+            document.getElementById('app-ui').classList.add('hidden');
+            document.getElementById('email').value = "";
+            document.getElementById('password').value = "";
+        }
+    </script>
+</body>
+</html>
